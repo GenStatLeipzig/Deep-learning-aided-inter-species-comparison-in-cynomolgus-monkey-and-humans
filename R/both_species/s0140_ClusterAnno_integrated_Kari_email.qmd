@@ -1,0 +1,546 @@
+---
+title: "azimuth 2nd"
+format:
+  html:
+    df-print: paged
+    fig-width: 16
+    fig-height: 12
+    code-fold: true
+    code-summary: "Show the code"
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    number-sections: false
+    standalone: true
+    embed-resources: true
+editor: source
+execute:
+  cache: false
+  warning: false
+editor_options:
+  chunk_output_type: console
+---
+
+# INITITATE
+  
+```{r}
+rm(list =ls())
+# .libPaths("~/rpackages/angmar/")
+.libPaths()
+
+library(toolboxH)
+library(Seurat)
+
+library(here)
+library(ggplot2)
+library(scales)
+library(ggthemes)
+# BiocManager::install("scRNAseq")
+library(BiocParallel)
+library(patchwork)
+library(Azimuth)
+
+
+# BiocManager::install("SingleR")
+
+library(future) #https://satijalab.org/celllines/archive/v3.0/future_vignette.html
+options(future.globals.maxSize= 30*1024^3) # to prevent the error
+future.seed=TRUE # to care for proper random seeds
+# The total size of the 15 globals exported for future expression ('FUN()') is 12.32 GiB.. This exceeds the maximum allowed size of 500.00 MiB (option 'future.globals.maxSize'). The three largest globals are 'object' (12.26 GiB of class 'numeric'), 'split.cells' (54.18 MiB of class 'list') and 'rowVars' (226.99 KiB of class 'function')
+
+# get available cores
+ncores = future::availableCores()
+
+ncores = 10
+plan("multicore", workers = ncores)
+initializeSkript()
+
+knitr::opts_chunk$set(cache = F, warning = F, message = F)
+```
+
+### special functions
+```{r}
+ggplotSankey <- function(input, sort_by_frequency =T) {
+  require(ggsankey)
+  require(ggrepel)
+  
+  require(dplyr)
+  sankey_gg_data = ggsankey::make_long(input, names(input))
+  
+  
+  sankey_gg_data_dt = as.data.table(sankey_gg_data, keep.rownames = F)
+  ordered = sankey_gg_data_dt[,.N, .(node, next_node)][order(is.na(next_node),-N, na.last = T)  ]
+  # ordered2 = ordered[order(-node, -N)]
+  
+  # sankey_gg_data$next_node = factor(sankey_gg_data$next_node, levels = reihenfolge)
+  NogpaletteReihe <-  c("#CB769E", "#DE639A", "#A85C85", "#0081AF", "#4F6D7A", "#7C6A0A", "#368F8B", "#246A73", "#5CC1BC", "#62C370", "#F7C548", "#F97E44", "#FB3640", "#B7245C", "#0D3B66", "#3E2F5B", "#B2675E", "#644536") %>% rev()
+  
+  
+  if(sort_by_frequency ==T){
+  sankey_gg_data$next_node = factor(sankey_gg_data$next_node, levels = unique(ordered$next_node) )
+  sankey_gg_data$node = factor(sankey_gg_data$node, levels = unique(ordered$node))
+  }
+  p_sankey = ggplot(sankey_gg_data, aes(x = x, next_x = next_x,
+                       node = node, next_node = next_node,
+                       fill = factor(node), label = node)) +
+    geom_sankey(flow.alpha = 0.6, node.color = alpha("grey55", 0.2), alpha = 0.4) +
+    geom_sankey_text(size = 4, color = "black") +
+    # scale_fill_manual(values = rep(NogpaletteReihe, 10) %>% sample()) +
+    theme_sankey(base_size = 18) +
+    labs(x = NULL) +
+    theme(legend.position = "none",
+                      plot.title = element_text(hjust = .5),
+          axis.text.x = element_text(color = "black"))
+  
+  
+  
+  p_sankey
+}
+
+
+doMarkerDotPlot <- function(seurat, marker_groups_peter,grouping_factor =  "predicted.celltype.l1_1st") {
+  # seurat = seurat_human2
+  # grouping_factor =  "predicted.celltype.l1.5"
+  marker_groups2 = copy(marker_groups_peter)
+  marker_groups2[, highmarker := markers]
+  marker_groups2[, celltype2 := celltype]
+  marker_groups = copy(marker_groups2)
+  
+  
+  marker_groups2[, highmarker := str_trim(highmarker)]
+  marker_groups2[,.N, celltype]
+  marker_groups2[,.N, celltype2] %>% data.frame()
+  
+  # qlist64a  = venn2(rownames(seurat_human), marker_groups2$highmarker)
+  # qlist64b = venn2(rownames(seurat_cyno), marker_groups2$highmarker)
+  
+  
+  # Create the base dotplot
+  plot_data <- DotPlot(
+    seurat,
+    group.by = grouping_factor,
+                       # seurat_human2,
+                       #  group.by ="predicted.celltype.l2_1st",
+                       features = unique(marker_groups2$highmarker %>% unique()),
+                       scale.by = "radius",
+                       scale = TRUE)
+  
+  # Extract the plot data
+  plot_df <- plot_data$data %>% as.data.table(keep.rownames = T)
+  plot_df[,.N, id]
+  
+  # Add grouping information
+  marker_groups2[, .(highmarker, celltype2)] %>% unique() %>% .[ toolboxH::allDuplicatedEntries(highmarker)]
+  plot_df2 = merge(plot_df, marker_groups2[, .(highmarker, group = celltype)] %>% unique(), by.x = 'features.plot', by.y = 'highmarker', all.x = T,allow.cartesian=TRUE )
+  
+  
+  plot_df2[,group := factor(group, levels = unique(marker_groups$celltype))]
+  
+  unique(plot_df2$id) %>% dput()
+  
+  levels_l1 = c("B", 
+  "CD4 T", "CD8 T","other T", "NK",  "Mono", "DC", "other")
+ levels_l2 =  c("B intermediate", "B memory", "B naive","Plasmablast", "CD4 Naive", 
+"CD4 Proliferating", "CD4 TCM", "CD4 TEM","CD4 CTL" , "CD8 Naive",  "CD8 Proliferating" , "CD8 TCM", 
+"CD8 TEM", "Treg",  "dnT", "gdT","MAIT", "ILC",  "NK", "NK Proliferating", "NK_CD56bright"  , "CD14 Mono", "CD16 Mono", "HSPC",  "Platelet", "cDC1", 
+"cDC2", "pDC")
+ 
+  levels_l1_5 = c("B", "Plasmablast", 
+  "CD4 T",  "CD4 Proliferating", "CD8 T",
+"CD8 Proliferating", "dnT", "gdT", "MAIT", "other T", "NK", "NK Proliferating", "Mono", "CD14 Mono", "CD16 Mono", "DC","Platelet" ,"other")
+  
+ 
+ 
+ if(all(plot_df2$id %in%  levels_l2))  plot_df2[,id := factor(id, levels =  levels_l2)] else if(all(plot_df2$id %in%  levels_l1))  plot_df2[,id := factor(id, levels =  levels_l1)] else if(all(plot_df2$id %in%  levels_l1_5))  plot_df2[,id := factor(id, levels =  levels_l1_5)] else  if(all(plot_df2$id %in%  levels_l2))  plot_df2[,id := factor(id, levels =  c(levels_l1_5, levels_l2, levels_l1, plot_df2$id) %>% unique())]
+ 
+  
+ 
+  # venn2(levels_l1, levels_l2)
+  
+  # Create the modified plot
+  markerplot = ggplot(plot_df2, aes(x = id, y = features.plot)) +
+    geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+    scale_color_gradient(low = "lightgrey", high = "blue") +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold", hjust = 0),  # Left-align strip text
+      # strip.placement = "outside",                          # Place strips outside
+      panel.spacing = unit(1, "lines")                   # Adjust space between facets
+    )+
+    facet_grid(. ~ group, switch = "x",scales = "free", space = "free") +
+    labs(x = "Cell Type", y = "Genes",
+         color = "Average Expression", size = "Percent Expressed") +
+    coord_flip() + ggtitle(deparse(substitute(seurat)), subtitle = deparse(substitute(grouping_factor)))
+  
+  print(markerplot)
+  markerplot
+}
+
+```
+## LOAD
+
+
+
+```{r}
+anno_human2 = fread(here("analysisR/results/s0135_cellano_human_azimuth_2nd.txt.gz"))
+
+anno_cyno_ortho2 = fread(here("analysisR/results/s0135_cellano_cyno_azimuth_2nd.txt.gz"))
+```
+
+
+```{r}
+seurat_human2 = readRDS(here("analysisR/results/s0135_seurat_human_azimuth_2nd.rds"))
+seurat_human2
+
+seurat_cyno_ortho2 = readRDS(here("analysisR/results/s0135_seurat_cyno_ortho_azimuth_2nd.rds"))
+seurat_cyno_ortho2
+ 
+seurat2 = readRDS(here("analysisR/results/s0130_merged_seurat2_integrated.rds"))
+seurat2
+
+
+
+```
+
+
+```{r}
+to_rename = grep("^predicted",names(seurat2@meta.data), value = T)
+to_rename
+setnames(seurat2@meta.data, to_rename, paste0(to_rename, "_1st"))
+
+anno_seurat2ori =  data.table(seurat2@meta.data, keep.rownames = T)
+```
+
+
+# recluster feiner
+```{r}
+seurat2 <- FindNeighbors(seurat2, reduction = "harmony", dims = 1:30)
+seurat2 <- FindClusters(seurat2, resolution = 4, cluster.name = "harmony_clusters")
+seurat2 <- RunUMAP(seurat2, reduction = "harmony", dims = 1:30, reduction.name = "umap.harmony")
+
+seurat2 <- FindNeighbors(seurat2, reduction = "integrated.scvi", dims = 1:30)
+seurat2 <- FindClusters(seurat2, resolution = 4, cluster.name = "scvi_clusters")
+seurat2 <- RunUMAP(seurat2, reduction = "integrated.scvi", dims = 1:30, reduction.name = "umap.scvi")
+```
+
+# anno table
+```{r}
+anno_seurat2 = data.table(seurat2@meta.data, keep.rownames = T)
+
+anno_seurat2[, predicted.celltype.l1.5a := anno_human2[match_hk(anno_seurat2$rn, anno_human2$rn), predicted.celltype.l1.5]]
+anno_seurat2[, predicted.celltype.l1.5b := anno_cyno_ortho2[match_hk(anno_seurat2$rn, anno_cyno_ortho2$rn), predicted.celltype.l1.5]]
+anno_seurat2[, predicted.celltype.l1.5 := ifelse(is.na(predicted.celltype.l1.5a), predicted.celltype.l1.5b, predicted.celltype.l1.5a)]
+
+anno_seurat2[, predicted.celltype.l1.5scorea := anno_human2[match_hk(anno_seurat2$rn, anno_human2$rn), predicted.celltype.l1.5score]]
+anno_seurat2[, predicted.celltype.l1.5scoreb := anno_cyno_ortho2[match_hk(anno_seurat2$rn, anno_cyno_ortho2$rn), predicted.celltype.l1.5score]]
+anno_seurat2[, predicted.celltype.l1.5score := ifelse(is.na(predicted.celltype.l1.5scorea), predicted.celltype.l1.5scoreb, predicted.celltype.l1.5scorea)]
+
+anno_seurat2[, predicted.celltype.l1.5a := NULL]
+anno_seurat2[, predicted.celltype.l1.5b := NULL]
+
+anno_seurat2[, predicted.celltype.l1.5scorea := NULL]
+anno_seurat2[, predicted.celltype.l1.5scoreb := NULL]
+
+anno_seurat2[, .N, .(predicted.celltype.l1.5)] %>% data.frame()
+
+anno_seurat2$harmony_clusters%>% table() %>%  barplot()
+anno_seurat2ori$harmony_clusters %>% table() %>%  barplot()
+
+
+anno_seurat2$scvi_clusters%>% table() %>%  barplot()
+anno_seurat2ori$scvi_clusters %>% table() %>%  barplot()
+
+```
+# add also predicted 2nd l2, i.e. using species specific azimuth based on qced seurat
+```{r}
+anno_seurat2[, predicted.celltype.l2_2nda := anno_human2[match_hk(anno_seurat2$rn, anno_human2$rn), predicted.celltype.l2_2nd]]
+anno_seurat2[, predicted.celltype.l2_2ndb := anno_cyno_ortho2[match_hk(anno_seurat2$rn, anno_cyno_ortho2$rn), predicted.celltype.l2_2nd]]
+anno_seurat2[, predicted.celltype.l2_2nd := ifelse(is.na(predicted.celltype.l2_2nda), predicted.celltype.l2_2ndb, predicted.celltype.l2_2nda)]
+
+anno_seurat2[, predicted.celltype.l2.score_2nda := anno_human2[match_hk(anno_seurat2$rn, anno_human2$rn), predicted.celltype.l2.score_2nd]]
+anno_seurat2[, predicted.celltype.l2.score_2ndb := anno_cyno_ortho2[match_hk(anno_seurat2$rn, anno_cyno_ortho2$rn), predicted.celltype.l2.score_2nd]]
+anno_seurat2[, predicted.celltype.l2.score_2nd := ifelse(is.na(predicted.celltype.l2.score_2nda), predicted.celltype.l2.score_2ndb, predicted.celltype.l2.score_2nda)]
+
+anno_seurat2[, predicted.celltype.l2_2nda := NULL]
+anno_seurat2[, predicted.celltype.l2_2ndb := NULL]
+
+anno_seurat2[, predicted.celltype.l2.score_2nda := NULL]
+anno_seurat2[, predicted.celltype.l2.score_2ndb := NULL]
+
+anno_seurat2[, .N, .(predicted.celltype.l2_2nd)] %>% data.frame()
+```
+
+
+# add also predicted 2nd l1, i.e. using species specific azimuth based on qced seurat
+```{r}
+anno_seurat2[, predicted.celltype.l1_2nda := anno_human2[match_hk(anno_seurat2$rn, anno_human2$rn), predicted.celltype.l1_2nd]]
+anno_seurat2[, predicted.celltype.l1_2ndb := anno_cyno_ortho2[match_hk(anno_seurat2$rn, anno_cyno_ortho2$rn), predicted.celltype.l1_2nd]]
+anno_seurat2[, predicted.celltype.l1_2nd := ifelse(is.na(predicted.celltype.l1_2nda), predicted.celltype.l1_2ndb, predicted.celltype.l1_2nda)]
+
+anno_seurat2[, predicted.celltype.l1.score_2nda := anno_human2[match_hk(anno_seurat2$rn, anno_human2$rn), predicted.celltype.l1.score_2nd]]
+anno_seurat2[, predicted.celltype.l1.score_2ndb := anno_cyno_ortho2[match_hk(anno_seurat2$rn, anno_cyno_ortho2$rn), predicted.celltype.l1.score_2nd]]
+anno_seurat2[, predicted.celltype.l1.score_2nd := ifelse(is.na(predicted.celltype.l1.score_2nda), predicted.celltype.l1.score_2ndb, predicted.celltype.l1.score_2nda)]
+
+anno_seurat2[, predicted.celltype.l1_2nda := NULL]
+anno_seurat2[, predicted.celltype.l1_2ndb := NULL]
+
+anno_seurat2[, predicted.celltype.l1.score_2nda := NULL]
+anno_seurat2[, predicted.celltype.l1.score_2ndb := NULL]
+
+anno_seurat2[, .N, .(predicted.celltype.l1_2nd)] %>% data.frame()
+```
+
+
+
+
+# compare with azimut
+```{r}
+ggplotSankey(anno_seurat2[,.(scvi_clusters,harmony_clusters)])
+ggplotSankey(anno_seurat2[,.(predicted.celltype.l1.5, scvi_clusters)]) + 
+ggplotSankey(anno_seurat2[,.(predicted.celltype.l1.5, harmony_clusters)])
+
+ggplotSankey(anno_seurat2[,.(scvi_clusters, predicted.celltype.l1.5)]) + 
+ggplotSankey(anno_seurat2[,.(harmony_clusters, predicted.celltype.l1.5)])
+
+```
+no clear winner
+
+Majority vote
+```{r}
+
+
+
+anno_seurat2[,  cluster_azimut1_5_scanvi := (table(predicted.celltype.l1.5) %>% sort( decreasing = T) %>% names())[1], by = .(scvi_clusters)]
+ggplotSankey(anno_seurat2[,.(predicted.celltype.l1.5, cluster_azimut1_5_scanvi, scvi_clusters)])
+
+anno_seurat2[,  cluster_azimut1_5_harmony := (table(predicted.celltype.l1.5) %>% sort( decreasing = T) %>% names())[1], by = .(harmony_clusters)]
+ggplotSankey(anno_seurat2[,.(predicted.celltype.l1.5, cluster_azimut1_5_harmony, harmony_clusters)])
+
+
+ggplotSankey(anno_seurat2[,.(cluster_azimut1_5_scanvi, cluster_azimut1_5_harmony)])
+
+
+stopifnot(identical(colnames(seurat2), anno_seurat2$rn))
+seurat2$cluster_azimut1_5_scanvi = anno_seurat2$cluster_azimut1_5_scanvi
+seurat2$cluster_azimut1_5_harmony = anno_seurat2$cluster_azimut1_5_harmony
+seurat2$predicted.celltype.l1.5 = anno_seurat2$predicted.celltype.l1.5
+seurat2$predicted.celltype.l1.5score = anno_seurat2$predicted.celltype.l1.5score
+
+seurat2$predicted.celltype.l2_2nd = anno_seurat2$predicted.celltype.l2_2nd
+seurat2$predicted.celltype.l1_2nd = anno_seurat2$predicted.celltype.l1_2nd
+
+
+DimPlot(seurat2, group.by = 'cluster_azimut1_5_scanvi', label = T, repel = T, label.size = 7, reduction = "umap.scvi") + DimPlot(seurat2, group.by = 'cluster_azimut1_5_harmony', label = T, repel = T, label.size = 7, reduction = "umap.harmony")
+
+
+(DimPlot(seurat2, group.by = 'cluster_azimut1_5_scanvi', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) + (DimPlot(seurat2, group.by = 'cluster_azimut1_5_harmony', label = T, repel = T, label.size = 7, reduction = "umap.harmony", split.by = "timepoint") + NoLegend())
+
+
+DimPlot(seurat2, group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 5, reduction = "umap.scvi") + DimPlot(seurat2, group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 5, reduction = "umap.harmony")
+
+DimPlot(seurat2, group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 5, reduction = "umap.scvi") + DimPlot(seurat2, group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 5, reduction = "umap.harmony")
+
+
+(DimPlot(seurat2, group.by = 'cluster_azimut1_5_scanvi', label = T, repel = T, label.size = 5, reduction = "umap.scvi") ) %>% plotly::ggplotly()
+
+(DimPlot(seurat2, group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 5, reduction = "umap.scvi") ) %>% plotly::ggplotly()
+
+(DimPlot(seurat2, group.by = 'predicted.celltype.l2_1st', label = T, repel = T, label.size = 5, reduction = "umap.scvi") ) %>% plotly::ggplotly()
+
+
+```
+
+```{r}
+DimPlot(seurat2, group.by = 'predicted.celltype.l1.5', label = F, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "cluster_azimut1_5_scanvi") 
+
+DimPlot(seurat2, group.by = 'scvi_clusters', label = T, repel = T, label.size = 5, reduction = "umap.scvi", split.by = "cluster_azimut1_5_scanvi") + NoLegend()
+```
+#
+```{r}
+anno_seurat2[scvi_clusters %in% c(41), .N, predicted.celltype.l2_2nd][order(-N)] %>% data.frame()
+anno_seurat2[scvi_clusters %in% c(53), .N, predicted.celltype.l2_2nd][order(-N)] %>% data.frame()
+anno_seurat2[predicted.celltype.l1_2nd %in% c("DC"), .N, .(scvi_clusters, cluster_azimut1_5_scanvi)][order(-N)] %>% data.frame()
+anno_seurat2[predicted.celltype.l2_2nd %in% c("dnT"), .N, .(scvi_clusters, cluster_azimut1_5_scanvi)][order(-N)] %>% data.frame()
+anno_seurat2[predicted.celltype.l2_2nd %in% c("gdT"), .N, .(scvi_clusters, cluster_azimut1_5_scanvi)][order(-N)] %>% data.frame()
+
+```
+
+
+```{r}
+marker_groups_peter <- rbind(
+  data.table(celltype = "B cells", markers = c("CD79B")),
+    data.table(celltype = "Plasma cells", markers = c( "PRDM1")),
+  data.table(celltype ="T cells", markers =  c("CD3E", "CD4", "CD8A")),
+  data.table(celltype ="gdT", markers =  c(  "GATA3")),#https://www.nature.com/articles/s41392-023-01653-8
+  # data.table(celltype ="dnT", markers =  c( "FAS", "FASLG", "IL2RB")),
+  data.table(celltype ="MAIT", markers =  c( "SLC4A10", "RORC")),
+  
+  data.table(celltype ="NK cells" , markers = c( "NCAM1", "KIR3DL1", "KLRD1")),
+  data.table(celltype ="Mono" , markers = c(  "FCN1", "CD14",  "S100A8")),
+  data.table(celltype ="Mono-Nonclass" , markers = c( "CX3CR1", "FCGR3A")),
+                                                   # "CCR2", # removed see https://www.proteinatlas.org/ENSG00000121807-CCR2/single+cell
+                                                # )),
+  data.table(celltype ="DC" , markers = c("FLT3", "FCER1A")),
+  
+  data.table(celltype ="Platelets", markers =  c("PPBP", "PF4")),
+  data.table(celltype ="Proliferating", markers = c("TOP2A", "MKI67")),
+  data.table(celltype ="Neutrophils", markers =  c("CXCR2"))
+)
+
+
+doMarkerDotPlot(seurat2, marker_groups_peter, grouping_factor = "predicted.celltype.l1.5") + ggtitle("Integrated, Azimuth 1.5")
+doMarkerDotPlot(seurat2, marker_groups_peter, grouping_factor = "cluster_azimut1_5_scanvi") + ggtitle("Integrated, cluster_azimut1_5_scanvi")
+doMarkerDotPlot(seurat2, marker_groups_peter, grouping_factor = "cluster_azimut1_5_harmony") + ggtitle("Integrated, cluster_azimut1_5_harmony")
+
+```
+```{r}
+doMarkerDotPlot(seurat2[, seurat2$cluster_azimut1_5_scanvi == "CD4 T"], marker_groups_peter, grouping_factor = "scvi_clusters") + ggtitle("CD4 T cluster scvi")
+doMarkerDotPlot(seurat2[, seurat2$cluster_azimut1_5_scanvi == "CD8 T"], marker_groups_peter, grouping_factor = "scvi_clusters") + ggtitle("CD8 T cluster scvi")
+
+anno_seurat2[scvi_clusters %in% c(10), .N, predicted.celltype.l2_2nd][order(-N)] %>% data.frame()
+anno_seurat2[scvi_clusters %in% c(10), .N, .(scvi_clusters,timepoint, predicted.celltype.l2_2nd)][order(timepoint, -N)] %>% dcast.data.table(scvi_clusters+predicted.celltype.l2_2nd ~ timepoint, value.var = "N", fill = 0) %>% data.frame()
+
+anno_seurat2[scvi_clusters %in% c(3), .N, .(scvi_clusters,timepoint, predicted.celltype.l2_2nd)][order(timepoint, -N)] %>% dcast.data.table(scvi_clusters+predicted.celltype.l2_2nd ~ timepoint, value.var = "N", fill = 0) %>% data.frame()
+
+
+anno_seurat2[scvi_clusters %in% c(3,10), .N, .(scvi_clusters,species, timepoint, predicted.celltype.l2_2nd)][order(species, timepoint, -N)] %>% dcast.data.table(species+scvi_clusters+predicted.celltype.l2_2nd ~ timepoint, value.var = "N", fill = 0) %>% .[order(species, scvi_clusters , -`24hr`)] %>% data.frame()
+
+anno_seurat2[scvi_clusters %in% c(2), .N, .(scvi_clusters,species, timepoint, predicted.celltype.l2_2nd)][order(species, timepoint, -N)] %>% dcast.data.table(species+scvi_clusters+predicted.celltype.l2_2nd ~ timepoint, value.var = "N", fill = 0) %>% data.frame()
+
+anno_seurat2[scvi_clusters %in% c(26,20,12),  .N, .(scvi_clusters,species, timepoint, predicted.celltype.l2_2nd)][order(species, timepoint, -N)] %>% dcast.data.table(species+scvi_clusters+predicted.celltype.l2_2nd ~ timepoint, value.var = "N", fill = 0) %>% .[order(species, scvi_clusters , -`24hr`)] %>% data.frame()
+
+
+
+(DimPlot(seurat2[, seurat2$cluster_azimut1_5_scanvi == "CD8 T"], group.by = 'scvi_clusters', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) + ggtitle("scvi_clusters CD8 T acc. cluster_azimut1_5_scanvi")
+
+anno_seurat2[scvi_clusters %in% c(53,41), .N, .(scvi_clusters,species, timepoint, predicted.celltype.l2_2nd)][order(species, timepoint, -N)] %>% dcast.data.table(species+scvi_clusters+predicted.celltype.l2_2nd ~ timepoint, value.var = "N", fill = 0) %>% .[order(species, scvi_clusters , -`24hr`)] %>% data.frame()
+```
+
+```{r}
+seurat2b = JoinLayers(seurat2)
+Seurat::VlnPlot(object = seurat2b[, seurat2b$cluster_azimut1_5_scanvi == "CD8 T"], group.by = 'scvi_clusters', features = "predicted.celltype.l1.5score") + ggtitle("scvi_clusters CD8 T acc. cluster_azimut1_5_scanvi")
+Seurat::VlnPlot(object = seurat2b[, seurat2b$cluster_azimut1_5_scanvi == "CD4 T"], group.by = 'scvi_clusters', features = "predicted.celltype.l1.5score") + ggtitle("scvi_clusters CD4 T acc. cluster_azimut1_5_scanvi")
+```
+
+
+```{r}
+
+# anno_seurat2 = fread(here("analysisR/results_GIT/s0140_clusteranno_scvi.txt.gz"))
+sm = anno_seurat2[,.N, .(predicted.celltype.l1.5 , timepoint, cluster_azimut1_5_scanvi,scvi_clusters )]
+
+ggplotSankey(anno_seurat2[scvi_clusters %in% c(21, 28, 41), .(predicted.celltype.l1.5, scvi_clusters, cluster_azimut1_5_scanvi, timepoint)]) + ggplotSankey(anno_seurat2[scvi_clusters %in% c(21, 28, 41), .( predicted.celltype.l1.5, timepoint,scvi_clusters,cluster_azimut1_5_scanvi)])
+
+
+(DimPlot(seurat2[], group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) 
+
+
+
+(DimPlot(seurat2[], group.by = 'cluster_azimut1_5_scanvi', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) 
+
+
+(DimPlot(seurat2[], group.by = 'scvi_clusters', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) 
+
+
+(DimPlot(seurat2[, seurat2$species =="human"], group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) /
+
+(DimPlot(seurat2[, seurat2$species =="cyno"], group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) 
+
+
+seurat2$species %>% table()
+(DimPlot(seurat2[], group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend())
+
+
+(DimPlot(seurat2[], group.by = 'scvi_clusters', label = T, repel = T, label.size = 7, reduction = "umap.scvi", split.by = "timepoint") + NoLegend()) /
+
+
+ggplotSankey(anno_seurat2[predicted.celltype.l1.5 %in% "CD16 Mono", .(predicted.celltype.l1.5,timepoint, scvi_clusters, cluster_azimut1_5_scanvi, timepoint)])
+
+```
+
+
+# KARU email
+```{r}
+pk1 = DimPlot(seurat2, group.by = 'predicted.celltype.l1.5', label = T, repel = T, label.size = 7, reduction = "umap.scvi")+ NoLegend()
+pk2 = FeaturePlot(seurat2, features =  'predicted.celltype.l1.5score', reduction = "umap.scvi") + scale_color_gradient2_tableau()
+pk3 = DimPlot(seurat2, group.by = 'scvi_clusters', label = T, repel = T, label.size = 7, reduction = "umap.scvi")+ NoLegend()
+pk4 = DimPlot(seurat2, group.by = 'run10x', label = F, repel = T, label.size = 7, reduction = "umap.scvi")
+
+(pk1 + pk2) / (pk3 + pk4)
+
+anno_seurat2[, N_celltype := .N, .(predicted.celltype.l1.5, timepoint, species)]
+pk5a = ggplot(anno_seurat2[, .(species, timepoint, predicted.celltype.l1.5,N_celltype)], aes(reorder(predicted.celltype.l1.5, -N_celltype),fill = species )) + geom_bar(col = "black", position = "dodge")+ theme_minimal(base_size = 16) + scale_fill_tableau() + theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top") + ggtitle("predicted.celltype.l1.5") + xlab("")
+pk5a
+
+pk5b = ggplotSankey(anno_seurat2[,.(species, predicted.celltype.l1.5)])
+pk5c = ggplotSankey(anno_seurat2[,.(timepoint, predicted.celltype.l1.5)])
+pk5a + pk5b
+pk5b + pk5c
+
+
+anno_seurat2[, percent_homologue_cells := sum(cluster_azimut1_5_scanvi==predicted.celltype.l1.5)/.N, .(cluster_azimut1_5_scanvi)]
+anno_seurat2[,.(percent_homologue_cells, cluster_azimut1_5_scanvi)] %>% unique() %>% .[order(percent_homologue_cells)] %>% data.frame()
+
+anno_seurat2[, percent_homologue_cluster := sum(cluster_azimut1_5_scanvi==predicted.celltype.l1.5)/.N, .(scvi_clusters)]
+anno_seurat2[,.(percent_homologue_cluster, cluster_azimut1_5_scanvi)] %>% unique() %>% .[order(percent_homologue_cluster)] %>% data.frame()
+
+anno_seurat2[, scvi_clusters_grouped_pre := paste(sort(unique(scvi_clusters)), collapse = ", "), .(cluster_azimut1_5_scanvi)]
+anno_seurat2[, scvi_clusters_grouped  := ifelse(percent_homologue_cluster <0.6, scvi_clusters, scvi_clusters_grouped_pre) %>% str_wrap(20)]
+
+anno_seurat2[, cluster_azimut1_5_scanvi_plusprolif := ifelse(grepl("Proliferating", predicted.celltype.l1.5), predicted.celltype.l1.5, cluster_azimut1_5_scanvi)]
+
+
+pk5d = ggplotSankey(anno_seurat2[,.(Azimuth = predicted.celltype.l1.5, `scVI-cluster` = scvi_clusters_grouped, `Azimuth per\ncluster` = cluster_azimut1_5_scanvi, `Azimuth per\ncluster+Prolif.`=cluster_azimut1_5_scanvi_plusprolif)])
+pk5dd = ggplotSankey(anno_seurat2[,.(`Azimuth\nlevel1` = predicted.celltype.l1_2nd,
+                                    `Azimuth\nlevel2` = predicted.celltype.l2_2nd,
+                                    Azimuth = predicted.celltype.l1.5, `scVI-cluster` = scvi_clusters_grouped, `Azimuth per\ncluster` = cluster_azimut1_5_scanvi, `Azimuth per\ncluster+Prolif.`=cluster_azimut1_5_scanvi_plusprolif)])
+
+pk5dd
+pk5e = ggplotSankey(anno_seurat2[,.(species, `Azimuth per\ncluster` = cluster_azimut1_5_scanvi)])
+pk5f1 = ggplotSankey(anno_seurat2[,.(timepoint, `Azimuth per\ncluster` = cluster_azimut1_5_scanvi)])
+pk5f2 = ggplotSankey(anno_seurat2[,.(timepoint,`Azimuth per\ncluster+Prolif.`=cluster_azimut1_5_scanvi_plusprolif, species)], sort_by_frequency = F)
+
+pk5d + pk5f2
+
+```
+
+```{r}
+stopifnot(identical(colnames(seurat2), anno_seurat2$rn))
+seurat2$cluster_azimut1_5_scanvi_plusprolif = anno_seurat2$cluster_azimut1_5_scanvi_plusprolif
+# seurat2$cluster_azimut1_5_scanvi = anno_seurat2$cluster_azimut1_5_scanvi_plusprolif
+
+
+doMarkerDotPlot(seurat2, marker_groups_peter, grouping_factor = "cluster_azimut1_5_scanvi_plusprolif") + ggtitle("Azimuth per cluster+Prolif") 
+doMarkerDotPlot(seurat2, marker_groups_peter, grouping_factor = "cluster_azimut1_5_scanvi") + ggtitle("Azimuth per cluster")
+```
+
+```{r}
+
+seurat2$time_species = paste(seurat2$timepoint, seurat2$species, sep = " ")
+DimPlot(seurat2[,seurat2$cluster_azimut1_5_scanvi %in% c("CD14 Mono", "CD16 Mono")], , group.by = 'cluster_azimut1_5_scanvi', label = F, repel = F, label.size = 7, pt.size = 1,reduction = "umap.scvi", split.by = "time_species") + ylim(c(-8.5, -3)) + xlim(c(-12, -5)) + theme(legend.position = "top") + ggtitle("Azimuth per cluster") + scale_color_tableau()
+
+
+DimPlot(seurat2[,seurat2$cluster_azimut1_5_scanvi %in% c("CD4 T")], , group.by = 'cluster_azimut1_5_scanvi_plusprolif', label = T, repel = T, label.size = 3, pt.size = 1,reduction = "umap.scvi", split.by = "time_species")  + theme(legend.position = "top") + ggtitle("Filtered for CD4 (Azimuth per cluster), Colored by `Azimuth per Cluster+Prolif.`")+ ylim(c(-2, 5.7))
+
+
+DimPlot(seurat2[,seurat2$cluster_azimut1_5_scanvi %in% c("CD8 T")], , group.by = 'cluster_azimut1_5_scanvi_plusprolif', label = T, repel = T, label.size = 3, pt.size = 1,reduction = "umap.scvi", split.by = "time_species")  + theme(legend.position = "top") + ggtitle("Filtered for CD8 (Azimuth per cluster), Colored by `Azimuth per Cluster+Prolif.`") + ylim(-2,5.5)
+```
+
+
+# save
+
+```{r}
+anno_seurat2[,.N, .(cluster_azimut1_5_scanvi, scvi_clusters)][order(scvi_clusters %>% as.numeric())] %>% data.frame()
+anno_seurat2[,.N, .(cluster_azimut1_5_scanvi)]%>% data.frame()
+
+fwrite(anno_seurat2[,.(rn, species, timepoint, individual, predicted.celltype.l1.5, run10x, cluster_azimut1_5_scanvi , scvi_clusters, predicted.celltype.l1.5, predicted.celltype.l1.5score )], here("analysisR/results/s0140_clusteranno_scvi_KARIemail.txt.gz"))
+
+fwrite(anno_seurat2[,.(rn, species, timepoint, individual, predicted.celltype.l1.5, run10x, cluster_azimut1_5_scanvi , scvi_clusters, predicted.celltype.l1.5, predicted.celltype.l1.5score )], here("analysisR/results_GIT/s0140_clusteranno_scvi_KARIemail.txt.gz"))
+
+```
+
+# finalize
+```{r}
+finalizeSkript()
+```

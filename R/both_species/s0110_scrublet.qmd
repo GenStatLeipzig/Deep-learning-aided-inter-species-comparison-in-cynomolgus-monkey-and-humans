@@ -1,0 +1,446 @@
+---
+title: "Doubldet_scrublet"
+format:
+  html:
+    df-print: kable
+    fig-width: 10
+    fig-height: 7
+    code-fold: true
+    code-summary: "Show the code"
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    number-sections: false
+    standalone: true
+    embed-resources: true
+    self-contained: true
+editor: source
+execute:
+  cache: false
+editor_options:
+  chunk_output_type: console
+---
+
+# INITITATE
+
+```{r}
+rm(list = ls())
+.libPaths()
+
+library(toolboxH)
+library(Seurat)
+
+library(here)
+library(ggplot2)
+library(scales)
+library(ggthemes)
+# BiocManager::install("scRNAseq")
+library(patchwork)
+
+require(rscrublet)
+library(Matrix)
+
+
+
+```
+
+### special functions
+```{r}
+
+
+```
+## LOAD
+
+
+
+```{r}
+# seurat = readRDS(here::here("results/s1003_3_snRNA_preprocessed_AmbientCorrect.RDS"))
+seurat_pre = readRDS(here("analysisR/results/s0105_all_obj_snRNA.RDS"))
+seurat = seurat_pre %>% JoinLayers()
+seurat$orig.ident %>% table()
+seurat$run10x = seurat$experiment
+seurat$run10x %>% mytable()
+
+```
+
+# SCRUBLET
+
+Based on Vignette
+https://github.com/iaaaka/Rscrublet/blob/main/vignettes/introduction.Rmd
+section  __Run rscrublet on Seurat dataset__
+
+
+run rscrublet on all 10x subsets
+with parameter tuning  **min_gene_variability_pctl**
+
+It is a good idea to try multiple different percentile variable numbers. We typically try, 80, 85, 90 and 95. Then we choose the one that has the best defined bimodal distribution based on the doublet_score_histogram.png (see Scrublet Results and Interpretation for details).
+Source https://demultiplexing-doublet-detecting-docs.readthedocs.io/en/latest/Scrublet.html 
+
+
+
+
+
+```{r}
+scrublet_helperfkt = function(mypctl, count_matrix_run,myrun) {
+  # mypctl= allpctls[1]
+  
+scrr = scrub_doublets(E_obs = count_matrix_run,
+                      expected_doublet_rate=nrow(count_matrix_run)/1000 * 0.008,## This is the calculation for 10x doublet rate but will be different for other platforms  # https://demultiplexing-doublet-detecting-docs.readthedocs.io/en/latest/Scrublet.html
+                      min_counts=3,  # vignette 2, https://demultiplexing-doublet-detecting-docs.readthedocs.io/en/latest/Scrublet.html 3, using 3
+                      min_cells=3, 
+                      min_gene_variability_pctl=mypctl, 
+                      n_prin_comps=30)
+
+scrr=call_doublets(scrr)
+
+plot_doublet_histogram(scrr) +title(sub=paste0(myrun, 'min_gene_variability_pctl', mypctl))
+erg = c()
+erg$scrr = scrr
+erg$pctl = mypctl
+
+erg
+
+}
+
+do_scruble_presteps = function(myrun, result_test_pcts,allpctls) {
+  # myrun = 'run1'
+  myrow = result_test_pcts[run_number==myrun]
+    message("myrun_name: ", myrow$run_name, ", myrun_number:  ", myrow$run_number)
+  count_matrix_run1 = t(as(seurat[,seurat$run10x==myrow$run_name]@assays$RNA$counts,'TsparseMatrix'))
+presteps = lapply(allpctls, function(x) scrublet_helperfkt(mypctl=x, count_matrix_run1, myrun))
+names(presteps) = allpctls
+presteps
+}
+
+
+
+do_scrublet_poststeps = function( myrun, mypctl, mythreshold, presteps, result_test_pcts) {
+    myrow = result_test_pcts[run_number==myrun]
+    message("myrun ", myrun,", myrun_name: ", myrow$run_name, ", mypctl ", mypctl, ", mythreshold ", mythreshold)
+  presteps[[as.character(mypctl)]]$scrr$threshold = mythreshold
+plot_doublet_histogram(presteps[[as.character(mypctl)]]$scrr) +  title(sub=paste0(" ",myrun," ",myrow$run_name  ,", pct=",mypctl,", threshold=",mythreshold))
+
+
+    result_test_pcts[ run_number==myrun, pctl := mypctl]
+    result_test_pcts[ run_number==myrun, threshold := mythreshold]
+
+result_test_pcts
+}
+```
+## runs initialisation
+```{r}
+
+allpctls = c(75, 80,85,90,95)
+
+result_test_pcts = data.table(run_name = seurat$run10x %>% unique())
+result_test_pcts[, run_number :=paste0('run', 1:length(run_name))]
+result_test_pcts
+```
+
+
+## All runs establishment 
+
+```{r}
+myrun = 'run1'
+presteps1 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.2
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps1, result_test_pcts)
+```
+
+
+```{r}
+myrun = 'run2'
+presteps2 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.2
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps2, result_test_pcts)
+
+```
+
+```{r}
+myrun = 'run3'
+presteps3 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 80
+mythreshold = 0.08
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps3, result_test_pcts)
+```
+
+
+```{r}
+myrun = 'run4'
+presteps4 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.2
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps4, result_test_pcts)
+```
+
+```{r}
+myrun = 'run5'
+presteps5 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.18
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps5, result_test_pcts)
+
+```
+
+```{r}
+myrun = 'run6'
+presteps6 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 85
+mythreshold = 0.13
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps6, result_test_pcts)
+```
+
+```{r}
+myrun = 'run7'
+presteps7 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.15
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps7, result_test_pcts)
+```
+
+```{r}
+myrun = 'run8'
+presteps8 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 80
+mythreshold = 0.2
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps8, result_test_pcts)
+```
+
+```{r}
+myrun = 'run9'
+presteps9 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.07
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps9, result_test_pcts)
+```
+
+
+```{r}
+myrun = 'run10'
+presteps10 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.17
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps10, result_test_pcts)
+```
+
+```{r}
+myrun = 'run11'
+presteps11 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 75
+mythreshold = 0.2
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps11, result_test_pcts)
+```
+
+```{r}
+myrun = 'run12'
+presteps12 = do_scruble_presteps(myrun, result_test_pcts,allpctls) 
+
+mypctl = 95
+mythreshold = 0.13
+
+result_test_pcts = do_scrublet_poststeps(myrun,mypctl, mythreshold, presteps12, result_test_pcts)
+
+```
+
+
+## Calling with identified cutoffs
+
+```{r}
+result_test_pcts = unique(result_test_pcts)
+
+
+all_scrublet = lapply(1:nrow(result_test_pcts), function(i) {
+  # i=1
+  run = result_test_pcts$run_name[i]
+  message("Working on run: ", run)
+  pctl = result_test_pcts$pctl[i] %>% as.character()
+  threshold = result_test_pcts$threshold[i]
+  presteps_list = get(paste0('presteps', i))
+  scrr = call_doublets(presteps_list[[pctl]]$scrr, threshold = threshold)
+  return(scrr)
+})
+
+names(all_scrublet) = result_test_pcts$run_name
+
+seuratanno = lapply(names(all_scrublet), function(myexperiment) {
+  # myexperiment = result_test_pcts$run_name[1]
+  myanno = seurat[, seurat$run10x == myexperiment]@meta.data %>% as.data.table(keep.rownames = T)
+  myscrr = all_scrublet[[myexperiment]]
+myanno$dblt_scrublet_score = myscrr$doublet_scores_obs
+myanno$dblt_scrublet_predicted = myscrr$predicted_doublets
+  myanno
+  
+}) %>% rbindlist()
+
+
+```
+
+## sumarize
+```{r}
+
+
+proz_scrublet = seuratanno[, .(N_scroublet_doublets = sum(dblt_scrublet_predicted==TRUE),
+               proz_scroublet_doublets = (sum(dblt_scrublet_predicted==TRUE)/.N)), by = c("run10x","species")]
+
+
+proz_scrublet[,method := 'scrublet']
+proz_scrublet
+seurat$dblt_scrublet_score = seuratanno[match_hk(colnames(seurat), seuratanno$rn), dblt_scrublet_score]
+seurat$dblt_scrublet_predicted = seuratanno[match_hk(colnames(seurat), seuratanno$rn), dblt_scrublet_predicted]
+
+```
+
+
+
+
+
+
+# compare with other doublet methods ----
+
+
+```{r}
+
+
+todovinc = data.table(allfiles = dir(here("analysis/results_GIT/"), pattern = "doub", full.names = T, recursive = T))
+todovinc[, algorithm := ifelse(grepl('_solo_', allfiles), "solo", "doubldetect")]
+todovinc[, fn := allfiles %>% str_split("/") %>% unlist() %>% last(), allfiles]
+todovinc[, tag:= fn %>% str_split("_DT_|_solo_") %>% unlist() %>% .[1], fn]
+todovinc[, num := .I]
+overview = fread(here("analysisR/results/s0100_scRNA_experimental.txt"))
+venn2(overview$old_corefn, todovinc$tag)
+
+annovinc  = lapply(todovinc$num, function(mynum) {
+  # mynum=1
+  myrow = todovinc[ num== mynum, ]
+  myfn = myrow$allfiles
+  myann = fread(myfn)
+  myann2 = cbind(myrow, myann)
+myann2[, newtag := paste0(overview[match_hk(myann2$tag, overview$old_corefn), cell_prefix],V1) %>% str_replace(., "-1-0", "-1") ]
+  return(myann2)
+}) %>% rbindlist(fill=T,use.names = T)
+
+annovinc[, doublet_guess := ifelse(grepl("solo", algorithm), factor(doublet_prediction, levels = c("singlet", "doublet")) %>% as.numeric()-1,
+                                        ifelse(grepl("doubldetect", algorithm),doublet, NA))]
+annovinc[, .N, .(algorithm, doublet_guess)]
+
+
+annovinc[, doublet_certain := ifelse(grepl("solo", algorithm) & doublet_guess==1, doublet-singlet,
+                                     ifelse(grepl("solo", algorithm) & doublet_guess==0, singlet-doublet,
+                                        ifelse(grepl("doubldetect", algorithm),doublet_score, NA)))]
+showNA(annovinc, showAllNoNA = F)
+
+```
+
+### scDblFinder
+```{r}
+scDblFinder = fread(here("analysisR/results/s0107_scDBlFinder.txt.gz"))
+
+
+annocells = seurat@meta.data %>% as.data.table(keep.rownames = T)
+qlist5 = venn2(annocells$rn, scDblFinder$rn)
+
+annocells$scDblFinder.score = scDblFinder[match_hk(colnames(seurat), annocells$rn), scDblFinder.score]
+annocells$scDblFinder.class = scDblFinder[match_hk(colnames(seurat), annocells$rn), scDblFinder.class]
+
+```
+
+## match
+```{r}
+
+qlist4 = venn2(annocells$rn, annovinc$newtag)
+
+annovinc_dblt_solo = annovinc[algorithm=="solo"]
+annovinc_dblt_doubldetect = annovinc[algorithm=="doubldetect"]
+
+annocells[, dblt_solo_guess :=annovinc_dblt_solo[match_hk(annocells$rn, annovinc_dblt_solo$newtag), doublet_guess ]]
+annocells[, dblt_doubldetect_guess :=annovinc_dblt_doubldetect[match_hk(annocells$rn, annovinc_dblt_doubldetect$newtag), doublet_guess ]]
+
+annocells[, dblt_solo_score :=annovinc_dblt_solo[match_hk(annocells$rn, annovinc_dblt_solo$newtag), doublet_certain ]]
+annocells[, dblt_doubldetect_score :=annovinc_dblt_doubldetect[match_hk(annocells$rn, annovinc_dblt_doubldetect$newtag), doublet_certain ]]
+
+annocells[,.(dblt_scrublet_score, dblt_solo_score,dblt_doubldetect_score, scDblFinder.score)] %>% nicepairs(cortype = "pearson")
+
+
+```
+
+### plot compare
+```{r}
+annocells[, dblt_scrublet_predicted2 := ifelse(dblt_scrublet_predicted ==T , "doublet", 'singlet')]
+annocells[, .N, .(dblt_scrublet_predicted2, dblt_scrublet_predicted)]
+
+annocells[, scDblFinder.class2 := scDblFinder.class]
+annocells[, .N, .(scDblFinder.class2, scDblFinder.class)]
+
+annocells[, dblt_doubldetect_guess2 := ifelse(dblt_doubldetect_guess ==1 , "doublet", 'singlet')]
+annocells[, .N, .(dblt_doubldetect_guess2, dblt_doubldetect_guess)]
+
+annocells[, dblt_solo_guess2 := ifelse(is.na(dblt_solo_guess), "NA", 
+                                       ifelse(dblt_solo_guess ==1 , "doublet", 'singlet'))]
+annocells[, .N, .(dblt_solo_guess2, dblt_solo_guess)]
+```
+
+```{r}
+showNA(annocells[,.(dblt_scrublet_predicted , dblt_solo_guess ,dblt_doubldetect_guess, scDblFinder.class)])
+toolboxH::plotSankey(annocells[,.( scrublet=dblt_scrublet_predicted2  ,dbldet=dblt_doubldetect_guess2,scDblFinder = scDblFinder.class2, solo=dblt_solo_guess2)], spalte4color = "scDblFinder")
+```
+
+
+
+
+# save
+```{r}
+fwrite(annocells, here::here("analysisR/results/s0110_scrublet_andother.txt.gz"))
+```
+
+# finalize
+```{r}
+finalizeSkript()
+```
+
+```{r}
+
+
+# #
+# .libPaths("~/rpackages/angmar/")
+# setwd("/net/ifs1/san_projekte/projekte/genstat/02_projekte/2210_snRNA_Sympath_hi_maus_herz/")
+# setwd("J:/02_projekte/2210_snRNA_Sympath_hi_maus_herz/")
+# rmarkdown::render(here::here("scripts/s1020_1_CheckDoubletDeacon.qmd"),encoding="UTF-8")
+
+```
+
+```{r}
+
+
+# #
+# .libPaths("~/rpackages/angmar/")
+# setwd("/net/ifs1/san_projekte/projekte/genstat/02_projekte/2210_snRNA_Sympath_hi_maus_herz/")
+# setwd("J:/02_projekte/2210_snRNA_Sympath_hi_maus_herz/")
+# rmarkdown::render(here::here("scripts/s1020_1_DoubletDeacon.qmd"),encoding="UTF-8")
+
+```
+
+

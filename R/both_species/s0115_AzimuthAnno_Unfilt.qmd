@@ -1,0 +1,302 @@
+---
+title: "azimuth"
+format:
+  html:
+    df-print: paged
+    fig-width: 10
+    fig-height: 7
+    code-fold: true
+    code-summary: "Show the code"
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    number-sections: false
+    standalone: true
+    embed-resources: true
+editor: source
+execute:
+  cache: false
+editor_options:
+  chunk_output_type: console
+---
+
+# INITITATE
+  
+```{r}
+rm(list = setdiff(ls(), "seurat"))
+# .libPaths("~/rpackages/angmar/")
+.libPaths()
+
+library(toolboxH)
+library(Seurat)
+
+library(here)
+library(ggplot2)
+library(scales)
+library(ggthemes)
+# BiocManager::install("scRNAseq")
+library(BiocParallel)
+library(patchwork)
+library(DropletUtils)
+library(celda)
+
+require(gprofiler2)
+
+# BiocManager::install("SingleR")
+
+library(future) #https://satijalab.org/celllines/archive/v3.0/future_vignette.html
+options(future.globals.maxSize= 30*1024^3) # to prevent the error
+future.seed=TRUE # to care for proper random seeds
+# The total size of the 15 globals exported for future expression ('FUN()') is 12.32 GiB.. This exceeds the maximum allowed size of 500.00 MiB (option 'future.globals.maxSize'). The three largest globals are 'object' (12.26 GiB of class 'numeric'), 'split.cells' (54.18 MiB of class 'list') and 'rowVars' (226.99 KiB of class 'function')
+ncores = 1
+plan("multicore", workers = ncores)
+# initializeSkript()
+
+```
+
+### special functions
+```{r}
+
+
+```
+## LOAD
+
+
+
+
+```{r}
+ 
+seurat = readRDS(here("analysisR/results/s0105_all_obj_snRNA.RDS"))
+seurat$orig.ident %>% table()
+seurat$run10x = seurat$experiment
+seurat$run10x %>% mytable()
+```
+
+
+
+
+
+# AZIMUTH
+## humanize
+
+```{r}
+# https://github.com/satijalab/seurat/issues/2617
+
+# library(nichenetr)
+# library(Seurat)
+# 
+# seurat_mat <- as.matrix(seurat@assays$RNA@data)
+# hh(seurat_mat,12)
+### Make a data frame of mouse genes and human genes mapping;
+### Here we use the function 'convert_human_to_mouse_symbols' from 
+  # nichenetr package to easily convert human to mouse.
+  # For details, you can type in ?geneinfo_2022 after loading nichenetr package 
+# con_df <- data.table(mouse = rownames(seurat_mat),
+#                      human = convert_mouse_to_human_symbols(rownames(seurat_mat)))
+# con_df
+# showNA(con_df)
+# ## As you can see there are a lot of NAs for which there are no mouse genes matching
+# ## Remove NAs
+# 
+# con_df2 <- con_df[!is.na(con_df$human)]
+# con_df2[allDuplicatedEntries(human)]
+# 
+# ## Filter the expression matrix for genes which a mouse counterpart is available
+# seurat_mat_hum_pre <- seurat_mat[con_df2$mouse,]
+# hh(seurat_mat_hum_pre)
+# expreslev = rowSums(seurat_mat_hum_pre)
+# con_df2[, expr_mouse := expreslev[match_hk(con_df2$mouse, names(expreslev))]]
+# setorder(con_df2, -expr_mouse)
+# con_df2[allDuplicatedEntries(human)]
+# con_df3 = con_df2[duplicated(human)==F]
+# con_df3
+# 
+# seurat_mat_hum_pre2 <- seurat_mat[con_df3$mouse,]
+# 
+# 
+# ## Now chnage the rownames of the matrix to the mouse gene names
+# rownames(seurat_mat_hum_pre2) <- con_df3$human
+
+## Create the seurat object with mouse genes.
+# seurat_hum <- CreateSeuratObject(counts = seurat_mat_hum_pre2, meta.data = seurat@meta.data )
+```
+
+#overlap genes
+```{r}
+seurat$species %>% mytable()
+seurat_hum = seurat[, seurat$species == "human"] %>% JoinLayers()
+seurat_cyno = seurat[, seurat$species == "cyno"] %>% JoinLayers()
+humgenes = rownames(seurat_hum@assays$RNA$counts)
+cynogenes = rownames(seurat_cyno@assays$RNA$counts)
+qlist1 = venn2(humgenes, cynogenes)
+genanno = qlist1 %>% as.data.table()
+
+genannom  = melt(genanno, measure.vars = names(genanno), variable.name = "vennsegement")
+genannom = genannom[duplicated(paste(vennsegement, value))==F]
+genannom[, species := ifelse(vennsegement == "q1", "both", 
+                             ifelse(vennsegement == "q2", "human",
+                                    ifelse(vennsegement == "q3", "cyno",vennsegement)))
+]
+
+genannom[,.N, vennsegement]
+```
+
+```{r}
+available_data <- SeuratData::AvailableData()
+available_data[grep("Azimuth", available_data[, 3]), 1:3]
+```
+
+
+```{r}
+require(Azimuth)
+
+seurat_joined = JoinLayers(seurat)
+seurat_joined <- RunAzimuth(seurat_joined, reference = "pbmcref")
+```
+
+
+```{r}
+p1 <- DimPlot(seurat_joined, group.by = "predicted.celltype.l1", label = TRUE, label.size = 3) + NoLegend()
+p2 <- DimPlot(seurat_joined, group.by = "predicted.celltype.l2", label = TRUE, label.size = 3) + NoLegend()
+p3 <- DimPlot(seurat_joined, group.by = "predicted.celltype.l3", label = TRUE, label.size = 3) + NoLegend()
+p1 + p2+p3
+
+DimPlot(seurat_joined, group.by = "predicted.celltype.l3", split.by="species", label = TRUE, label.size = 5) 
+
+
+VlnPlot(seurat_joined, "MT-ND5",group.by = "predicted.celltype.l3",  split.by="species") 
+
+
+
+annhum = seurat_joined@meta.data %>% as.data.table(keep.rownames = T)
+
+
+seurat$predicted.celltype.l1 = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l1]
+seurat$predicted.celltype.l1.score = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l1.score]
+seurat$mapping.score = annhum[match_hk(colnames(seurat), annhum$rn),mapping.score]
+
+ggplot(annhum, aes( predicted.celltype.l1, predicted.celltype.l1.score, fill = predicted.celltype.l1)) + geom_violin(scale = "width")+ theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(annhum, aes( predicted.celltype.l1, mapping.score, fill = predicted.celltype.l1)) + geom_violin(scale = "width")+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) + facet_wrap(~species, scales = "free")
+
+seurat$predicted.celltype.l2 = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l2]
+seurat$predicted.celltype.l2.score = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l2.score]
+
+ggplot(annhum, aes( predicted.celltype.l2, predicted.celltype.l2.score, fill = predicted.celltype.l1)) + geom_violin(scale = "width") + theme(axis.text.x = element_text(angle = 45, hjust = 1))+ theme(axis.text.x = element_text(angle = 45, hjust = 1)) + facet_wrap(~predicted.celltype.l1, scales = "free")
+
+seurat$predicted.celltype.l3 = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l3]
+seurat$predicted.celltype.l3.score = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l3.score]
+ggplot(annhum, aes( predicted.celltype.l3, predicted.celltype.l3.score, fill = predicted.celltype.l1)) + geom_violin(scale = "width") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + facet_wrap(~predicted.celltype.l1, scales = "free")
+
+# seurat$predicted.celltype.l4 = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l4]
+# seurat$predicted.celltype.l4.score = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l4.score]
+# 
+# seurat$predicted.celltype.l5 = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l5]
+# seurat$predicted.celltype.l5.score = annhum[match_hk(colnames(seurat), annhum$rn),predicted.celltype.l5.score]
+# 
+# seurat$predicted.ann_finest_level = annhum[match_hk(colnames(seurat), annhum$rn),predicted.ann_finest_level]
+# seurat$predicted.ann_finest_level.score = annhum[match_hk(colnames(seurat), annhum$rn),predicted.ann_finest_level.score]
+
+```
+
+# compare with anndata ----
+
+## load andata
+```{r}
+todovinc = data.table(allfiles = dir(here("analysis/results_GIT/"), pattern = "anno", full.names = T, recursive = T))
+todovinc[, reference := ifelse(grepl('COVID19_PBMC', allfiles), "COVID19_PBMC", "Healty_WholeBlood")]
+todovinc[, fn := allfiles %>% str_split("/") %>% unlist() %>% last(), allfiles]
+todovinc[, tag:= fn %>% str_split("_anno") %>% unlist() %>% .[1], fn]
+todovinc[, num := .I]
+overview = fread(here("analysisR/results/s0100_scRNA_experimental.txt"))
+venn2(overview$old_corefn, todovinc$tag)
+
+annovinc  = lapply(todovinc$num, function(mynum) {
+  # mynum=1
+  myrow = todovinc[ num== mynum, ]
+  myfn = myrow$allfiles
+  myann = fread(myfn)
+  myann2 = cbind(myrow, myann)
+myann2[, newtag := paste0(overview[match_hk(myann2$tag, overview$old_corefn), cell_prefix],V1) ]
+  return(myann2)
+}) %>% rbindlist()
+
+
+
+```
+## match
+```{r}
+annocells = seurat@meta.data %>% as.data.table(keep.rownames = T)
+qlist4 = venn2(annocells$rn, annovinc$newtag)
+annovinc_COVID19_PBMC = annovinc[reference=="COVID19_PBMC"]
+annovinc_Healty_WholeBlood = annovinc[reference=="Healty_WholeBlood"]
+
+annocells[, COVID19_PBMC_maj :=annovinc_COVID19_PBMC[match_hk(annocells$rn, annovinc_COVID19_PBMC$newtag), majority_voting ]]
+annocells[, Healty_WholeBlood_maj :=annovinc_Healty_WholeBlood[match_hk(annocells$rn, annovinc_Healty_WholeBlood$newtag), majority_voting ]]
+
+annocells[, COVID19_PBMC_predlab :=annovinc_COVID19_PBMC[match_hk(annocells$rn, annovinc_COVID19_PBMC$newtag), predicted_labels ]]
+annocells[, Healty_WholeBlood_predlab :=annovinc_Healty_WholeBlood[match_hk(annocells$rn, annovinc_Healty_WholeBlood$newtag), predicted_labels ]]
+
+```
+
+
+```{r}
+pdf(here("analysisR/results/s0115_Azimuth_vs_celltypist_majority.pdf"), width = 25, height = 15)
+toolboxH::plotSankey(annocells[,.(predicted.celltype.l3, predicted.celltype.l1 ,COVID19_PBMC_maj, Healty_WholeBlood_maj)], spalte4color = "predicted.celltype.l1")
+dev.off()
+
+pdf(here("analysisR/results/s0115_Azimuth_vs_celltypist_predlab.pdf"), width = 25, height = 15)
+toolboxH::plotSankey(annocells[,.(predicted.celltype.l3, predicted.celltype.l1 ,COVID19_PBMC_predlab, Healty_WholeBlood_predlab)], spalte4color = "predicted.celltype.l1")
+dev.off()
+
+pdf(here("analysisR/results/s0115_celltypist_COVID19_PBMC_majority_predlab.pdf"), width = 25, height = 15)
+toolboxH::plotSankey(annocells[,.(COVID19_PBMC_maj, COVID19_PBMC_predlab )], spalte4color = "COVID19_PBMC_maj")
+dev.off()
+
+
+pdf(here("analysisR/results/s0115_celltypist_COVID19_PBMC_majority_Wholeblood_azimutl3.pdf"), width = 25, height = 15)
+toolboxH::plotSankey(annocells[,.(COVID19_PBMC_maj, predicted.celltype.l3 ,Healty_WholeBlood_maj)], spalte4color = "predicted.celltype.l3")
+dev.off()
+
+
+```
+
+```{r}
+# require(ggsankey)
+# require(ggrepel)
+# 
+# require(dplyr)
+# sankey_gg_data = ggsankey::make_long(data.table(l1=seurat$predicted.celltype.l1, l3 = seurat$predicted.celltype.l3), l1, l3)
+# 
+# # sankey_gg_data$next_node = factor(sankey_gg_data$next_node, levels = reihenfolge)
+# NogpaletteReihe <-  c("#CB769E", "#DE639A", "#A85C85", "#0081AF", "#4F6D7A", "#7C6A0A", "#368F8B", "#246A73", "#5CC1BC", "#62C370", "#F7C548", "#F97E44", "#FB3640", "#B7245C", "#0D3B66", "#3E2F5B", "#B2675E", "#644536")
+# 
+# p_sankey = ggplot(sankey_gg_data, aes(x = x, next_x = next_x, 
+#                      node = node, next_node = next_node, 
+#                      fill = factor(node), label = node)) +
+#   geom_sankey(flow.alpha = 0.6, node.color = alpha("grey55", 0.2), alpha = 0.4) +
+#   geom_sankey_text(size = 4, color = "black") +
+#   # scale_fill_manual(values = rep(NogpaletteReihe, 10) %>% sample()) +
+#   theme_sankey(base_size = 18) +
+#   labs(x = NULL) +
+#   theme(legend.position = "none",
+#                     plot.title = element_text(hjust = .5),
+#         axis.text.x = element_text(color = "black"))
+# p_sankey
+```
+
+
+ 
+
+# Save
+```{r}
+fwrite(annocells, here("analysisR/results/s0115_cellano_azimuth.txt.gz"), sep = "\t")
+fwrite(genannom, here("analysisR/results/s0115_genes_human_cyno.txt.gz"), sep = "\t")
+# saveRDS(seurat, here("results/s502_1_seurat_dehashed_1st_azimuth.rds"))
+```
+
+
+# finalize
+```{r}
+finalizeSkript()
+```

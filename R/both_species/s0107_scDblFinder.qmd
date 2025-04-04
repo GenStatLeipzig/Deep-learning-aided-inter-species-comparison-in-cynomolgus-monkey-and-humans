@@ -1,0 +1,119 @@
+---
+title: "scDBlFinder"
+format:
+  html:
+    df-print: kable
+    fig-width: 10
+    fig-height: 7
+    code-fold: true
+    code-summary: "Show the code"
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    number-sections: false
+    standalone: true
+    embed-resources: true
+editor: source
+execute:
+  cache: false
+editor_options:
+  chunk_output_type: console
+---
+
+# INITITATE
+
+```{r}
+rm(list = setdiff(ls(), "seurat"))
+# .libPaths("~/rpackages/angmar/")
+.libPaths()
+
+library(toolboxH)
+library(Seurat)
+
+library(here)
+library(ggplot2)
+library(scales)
+library(ggthemes)
+# BiocManager::install("scRNAseq")
+library(BiocParallel)
+library(patchwork)
+library(DropletUtils)
+library(celda)
+
+require(gprofiler2)
+
+# BiocManager::install("SingleR")
+
+library(future) #https://satijalab.org/celllines/archive/v3.0/future_vignette.html
+options(future.globals.maxSize= 30*1024^3) # to prevent the error
+future.seed=TRUE # to care for proper random seeds
+# The total size of the 15 globals exported for future expression ('FUN()') is 12.32 GiB.. This exceeds the maximum allowed size of 500.00 MiB (option 'future.globals.maxSize'). The three largest globals are 'object' (12.26 GiB of class 'numeric'), 'split.cells' (54.18 MiB of class 'list') and 'rowVars' (226.99 KiB of class 'function')
+ncores = 1
+plan("multicore", workers = ncores)
+initializeSkript()
+
+```
+
+## special functions
+```{r}
+# source(here("../../07_programme/github/scRNATexMex/R/scRNA_functions_23-04-27v2.R"))
+
+source(here("analysisR/scripts/R_helperfunctions.R"))
+ 
+
+```
+# LOAD
+
+
+
+
+```{r}
+seurat_pre = readRDS(here("analysisR/results/s0105_all_obj_snRNA.RDS"))
+seurat = seurat_pre %>% JoinLayers()
+seurat$orig.ident %>% table()
+seurat$run10x = seurat$experiment
+seurat$run10x %>% mytable()
+# checkSCTslots(seurat)
+# DimPlot(seurat, group.by = "SCT_snn_res.0.8")
+# plot3clusterings(seurat)
+
+```
+
+mitos should not be so relevant in snRNA
+```{r}
+# FeaturePlot(seurat, "pct.mito")
+# VlnPlot(seurat, features = "pct.mito", group.by =  "SCT_snn_res.0.8")
+
+```
+
+
+
+```{r}
+sce <- as.SingleCellExperiment(seurat, assay= "RNA")
+sce$run10x %>% table()
+library(BiocParallel)
+require(scDblFinder)
+sce <- scDblFinder(sce, samples="run10x")
+table(sce$scDblFinder.class)
+sce$ident %>% table()
+sce_attrib = sce@colData %>% as.data.table(keep.rownames = T)
+sce_attrib[,.N, .( scDblFinder.class, species)]
+resi = sce_attrib[, . (rn, scDblFinder.sample, scDblFinder.class, scDblFinder.score, scDblFinder.weighted, scDblFinder.cxds_score)] # in particular 'scDblFinder.score' (the final score used) and 'scDblFinder.class' (whether the cell is called as 'doublet' or 'singlet').
+resi[, boxplot(scDblFinder.score~scDblFinder.class)$x]
+
+seurat$scDblFinder.score = resi[match_hk(colnames(seurat), resi$rn), scDblFinder.score]
+seurat$scDblFinder.class = resi[match_hk(colnames(seurat), resi$rn), scDblFinder.class]
+
+```
+
+# save
+```{r}
+fwrite(resi, here("analysisR/results/s0107_scDBlFinder.txt.gz"), sep = "\t")
+```
+
+
+# finalizeScript
+```{r}
+finalizeSkript()
+```
+

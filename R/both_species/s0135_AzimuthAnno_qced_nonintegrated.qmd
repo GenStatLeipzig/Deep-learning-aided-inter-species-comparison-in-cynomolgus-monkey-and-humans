@@ -1,0 +1,556 @@
+---
+title: "azimuth 2nd"
+format:
+  html:
+    df-print: paged
+    fig-width: 16
+    fig-height: 12
+    code-fold: true
+    code-summary: "Show the code"
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    number-sections: false
+    standalone: true
+    embed-resources: true
+editor: source
+execute:
+  cache: false
+  warning: false
+editor_options:
+  chunk_output_type: console
+---
+
+# INITITATE
+  
+```{r}
+rm(list = ls())
+# .libPaths("~/rpackages/angmar/")
+.libPaths()
+
+library(toolboxH)
+library(Seurat)
+
+library(here)
+library(ggplot2)
+library(scales)
+library(ggthemes)
+# BiocManager::install("scRNAseq")
+library(BiocParallel)
+library(patchwork)
+library(Azimuth)
+
+
+# BiocManager::install("SingleR")
+
+library(future) #https://satijalab.org/celllines/archive/v3.0/future_vignette.html
+options(future.globals.maxSize= 30*1024^3) # to prevent the error
+future.seed=TRUE # to care for proper random seeds
+# The total size of the 15 globals exported for future expression ('FUN()') is 12.32 GiB.. This exceeds the maximum allowed size of 500.00 MiB (option 'future.globals.maxSize'). The three largest globals are 'object' (12.26 GiB of class 'numeric'), 'split.cells' (54.18 MiB of class 'list') and 'rowVars' (226.99 KiB of class 'function')
+
+# get available cores
+ncores = future::availableCores()
+
+ncores = 10
+plan("multicore", workers = ncores)
+initializeSkript()
+
+knitr::opts_chunk$set(cache = F, warning = F, message = F)
+```
+
+### special functions
+```{r}
+ggplotSankey <- function(input, sort_by_frequency =T) {
+  require(ggsankey)
+  require(ggrepel)
+  
+  require(dplyr)
+  sankey_gg_data = ggsankey::make_long(input, names(input))
+  
+  
+  sankey_gg_data_dt = as.data.table(sankey_gg_data, keep.rownames = F)
+  ordered = sankey_gg_data_dt[,.N, .(node, next_node)][order(is.na(next_node),-N, na.last = T)  ]
+  # ordered2 = ordered[order(-node, -N)]
+  
+  # sankey_gg_data$next_node = factor(sankey_gg_data$next_node, levels = reihenfolge)
+  NogpaletteReihe <-  c("#CB769E", "#DE639A", "#A85C85", "#0081AF", "#4F6D7A", "#7C6A0A", "#368F8B", "#246A73", "#5CC1BC", "#62C370", "#F7C548", "#F97E44", "#FB3640", "#B7245C", "#0D3B66", "#3E2F5B", "#B2675E", "#644536") %>% rev()
+  
+  
+  if(sort_by_frequency ==T){
+  sankey_gg_data$next_node = factor(sankey_gg_data$next_node, levels = unique(ordered$next_node) )
+  sankey_gg_data$node = factor(sankey_gg_data$node, levels = unique(ordered$node))
+  }
+  p_sankey = ggplot(sankey_gg_data, aes(x = x, next_x = next_x,
+                       node = node, next_node = next_node,
+                       fill = factor(node), label = node)) +
+    geom_sankey(flow.alpha = 0.6, node.color = alpha("grey55", 0.2), alpha = 0.4) +
+    geom_sankey_text(size = 4, color = "black") +
+    # scale_fill_manual(values = rep(NogpaletteReihe, 10) %>% sample()) +
+    theme_sankey(base_size = 18) +
+    labs(x = NULL) +
+    theme(legend.position = "none",
+                      plot.title = element_text(hjust = .5),
+          axis.text.x = element_text(color = "black"))
+  
+  
+  
+  p_sankey
+}
+
+
+doMarkerDotPlot <- function(seurat, marker_groups_peter,grouping_factor =  "predicted.celltype.l1_1st") {
+  # seurat = seurat_human2
+  # grouping_factor =  "predicted.celltype.l1.5"
+  marker_groups2 = copy(marker_groups_peter)
+  marker_groups2[, highmarker := markers]
+  marker_groups2[, celltype2 := celltype]
+  marker_groups = copy(marker_groups2)
+  
+  
+  marker_groups2[, highmarker := str_trim(highmarker)]
+  marker_groups2[,.N, celltype]
+  marker_groups2[,.N, celltype2] %>% data.frame()
+  
+  qlist64a  = venn2(rownames(seurat_human), marker_groups2$highmarker)
+  qlist64b = venn2(rownames(seurat_cyno), marker_groups2$highmarker)
+  
+  
+  # Create the base dotplot
+  plot_data <- DotPlot(
+    seurat,
+    group.by = grouping_factor,
+                       # seurat_human2,
+                       #  group.by ="predicted.celltype.l2_1st",
+                       features = unique(marker_groups2$highmarker %>% unique()),
+                       scale.by = "radius",
+                       scale = TRUE)
+  
+  # Extract the plot data
+  plot_df <- plot_data$data %>% as.data.table(keep.rownames = T)
+  plot_df[,.N, id]
+  
+  # Add grouping information
+  marker_groups2[, .(highmarker, celltype2)] %>% unique() %>% .[ toolboxH::allDuplicatedEntries(highmarker)]
+  plot_df2 = merge(plot_df, marker_groups2[, .(highmarker, group = celltype)] %>% unique(), by.x = 'features.plot', by.y = 'highmarker', all.x = T,allow.cartesian=TRUE )
+  
+  
+  plot_df2[,group := factor(group, levels = unique(marker_groups$celltype))]
+  
+  unique(plot_df2$id) %>% dput()
+  
+  levels_l1 = c("B", 
+  "CD4 T", "CD8 T","other T", "NK",  "Mono", "DC", "other")
+ levels_l2 =  c("B intermediate", "B memory", "B naive","Plasmablast", "CD4 Naive", 
+"CD4 Proliferating", "CD4 TCM", "CD4 TEM","CD4 CTL" , "CD8 Naive",  "CD8 Proliferating" , "CD8 TCM", 
+"CD8 TEM", "Treg",  "dnT", "gdT","MAIT", "ILC",  "NK", "NK Proliferating", "NK_CD56bright"  , "CD14 Mono", "CD16 Mono", "HSPC",  "Platelet", "cDC1", 
+"cDC2", "pDC")
+ 
+  levels_l1_5 = c("B", "Plasmablast", 
+  "CD4 T",  "CD4 Proliferating", "CD8 T",
+"CD8 Proliferating", "dnT", "gdT", "MAIT", "other T", "NK", "NK Proliferating", "Mono", "CD14 Mono", "CD16 Mono", "DC", "other")
+  
+ 
+ 
+ if(all(plot_df2$id %in%  levels_l2))  plot_df2[,id := factor(id, levels =  levels_l2)] else if(all(plot_df2$id %in%  levels_l1))  plot_df2[,id := factor(id, levels =  levels_l1)] else if(all(plot_df2$id %in%  levels_l1_5))  plot_df2[,id := factor(id, levels =  levels_l1_5)] else  if(all(plot_df2$id %in%  levels_l2))  plot_df2[,id := factor(id, levels =  c(levels_l1_5, levels_l2, levels_l1, plot_df2$id) %>% unique())]
+ 
+  
+ 
+  # venn2(levels_l1, levels_l2)
+  
+  # Create the modified plot
+  markerplot = ggplot(plot_df2, aes(x = id, y = features.plot)) +
+    geom_point(aes(size = pct.exp, color = avg.exp.scaled)) +
+    scale_color_gradient(low = "lightgrey", high = "blue") +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold", hjust = 0),  # Left-align strip text
+      # strip.placement = "outside",                          # Place strips outside
+      panel.spacing = unit(1, "lines")                   # Adjust space between facets
+    )+
+    facet_grid(. ~ group, switch = "x",scales = "free", space = "free") +
+    labs(x = "Cell Type", y = "Genes",
+         color = "Average Expression", size = "Percent Expressed") +
+    coord_flip() + ggtitle(deparse(substitute(seurat)), subtitle = deparse(substitute(grouping_factor)))
+  
+  print(markerplot)
+  markerplot
+}
+
+```
+## LOAD
+
+Celltypes paper oelen 2022
+```{r}
+# celltypes_oelen = read_excel2(here("data/oelen_2022_pbmc_marker_41467_2022_30893_MOESM7_ESM.xlsx"), skip =1)
+
+```
+
+
+
+```{r}
+seurat_cyno_ortho2 <- readRDS(here("analysisR/results/s0125_seurat_QCed_cyno_orthologyzed1to1.rds"))
+seurat_cyno_ortho2
+
+seurat_cyno <- readRDS(here("analysisR/results/s0120_seurat_QCed_cyno.rds"))
+seurat_cyno
+
+
+seurat_human <- readRDS(here("analysisR/results/s0120_seurat_QCed_human.rds"))
+seurat_human
+
+activating_celltypes =  c("IL2RA", "MKI67", "TFRC", "CD28",  "IFNG") # "CD69", "IL2",
+VlnPlot(seurat_human,activating_celltypes, alpha = 0.3, pt.size = 0.1, group.by = "predicted.celltype.l2",split.by = "timepoint") + plot_annotation(title = "seurat_human") & theme(legend.position = "top") & scale_fill_tableau()
+
+VlnPlot(seurat_cyno_ortho2, activating_celltypes, alpha = 0.3, pt.size = 0.1,group.by = "predicted.celltype.l2",split.by = "timepoint")+ plot_annotation(title = "seurat_cyno_ortho2")  & theme(legend.position = "top") & scale_fill_tableau()
+
+VlnPlot(seurat_cyno, activating_celltypes, alpha = 0.3, pt.size = 0.1,group.by = "predicted.celltype.l2",split.by = "timepoint")+ plot_annotation(title = "seurat_cyno")  & theme(legend.position = "top") & scale_fill_tableau()
+
+
+```
+
+
+## Minimal prepro to have clusters
+
+### Cyno orthologisiert
+```{r}
+
+
+seurat_cyno_ortho2
+
+seurat_cyno_ortho2$run10x %>% unique() %>% dput
+
+plotSankey(seurat_cyno_ortho2@meta.data[, c('predicted.celltype.l1', 'predicted.celltype.l2')], spalte4color = 'predicted.celltype.l2')
+ggplotSankey(seurat_cyno_ortho2@meta.data[, c('predicted.celltype.l1', 'predicted.celltype.l2', "timepoint")], sort_by_frequency = T)
+
+ggplotSankey(seurat_cyno_ortho2@meta.data[, c('predicted.celltype.l1', "seurat_clusters", 'predicted.celltype.l2')], sort_by_frequency = T)
+
+
+```
+
+
+### human
+```{r}
+seurat_human2 =DietSeurat(seurat_human) %>% 
+   NormalizeData( normalization.method = "LogNormalize", scale.factor = 10000) %>% 
+  FindVariableFeatures() %>% 
+  ScaleData() %>% 
+  RunPCA() %>% 
+  FindNeighbors(dims = 1:30, reduction = "pca")
+
+seurat_human2 = FindClusters(seurat_human2, resolution = 1, cluster.name = "unintegrated_clusters_perspecies") %>% 
+  RunUMAP(dims = 1:30, reduction = "pca", reduction.name = "umap.unintegrated_perspecies")
+
+
+DimPlot(seurat_human2, group.by = "predicted.celltype.l1", , repel = T,label = TRUE, label.size = 5) + NoLegend()  + (DimPlot(seurat_human2, group.by = "predicted.celltype.l2", label = TRUE, label.size = 5, repel = T) + NoLegend() ) + DimPlot(seurat_human2, group.by = "run10x", , repel = T,label = TRUE, label.size = 5) + VlnPlot(seurat_human2, "PTPRC", group.by = "predicted.celltype.l1")
+
+ 
+
+
+
+```
+
+```{r}
+qlist223 = venn3(rownames(seurat_cyno), rownames(seurat_cyno_ortho2), rownames(seurat_human2), mylabels =  c("Cyno", "Cyno ortho", "Human"))
+str(qlist223)
+
+```
+
+
+# umbenennen 
+```{r}
+to_rename = grep("^predicted",names(seurat_human2@meta.data), value = T)
+to_rename
+setnames(seurat_human2@meta.data, to_rename, paste0(to_rename, "_1st"))
+
+
+```
+
+```{r}
+to_rename = grep("^predicted",names(seurat_cyno_ortho2@meta.data), value = T)
+to_rename
+setnames(seurat_cyno_ortho2@meta.data, to_rename, paste0(to_rename, "_1st"))
+
+```
+
+
+# markerplot
+
+# dotplot ----
+```{r}
+# Create a named list to group markers by cell type
+marker_groups_peter <- rbind(
+  data.table(celltype = "B cells", markers = c("CD79B")),
+    data.table(celltype = "Plasma cells", markers = c( "PRDM1")),
+  data.table(celltype ="T cells", markers =  c("CD3E", "CD4", "CD8A")),
+  data.table(celltype ="gdT", markers =  c(  "GATA3")),#https://www.nature.com/articles/s41392-023-01653-8
+  # data.table(celltype ="dnT", markers =  c( "FAS", "FASLG", "IL2RB")),
+  data.table(celltype ="MAIT", markers =  c( "SLC4A10", "RORC")),
+  
+  data.table(celltype ="NK cells" , markers = c( "NCAM1", "KIR3DL1", "KLRD1")),
+  data.table(celltype ="Mono" , markers = c(  "FCN1", "CD14",  "S100A8")),
+  data.table(celltype ="Mono-Nonclass" , markers = c( "CX3CR1", "FCGR3A")),
+                                                   # "CCR2", # removed see https://www.proteinatlas.org/ENSG00000121807-CCR2/single+cell
+                                                # )),
+  data.table(celltype ="DC" , markers = c("FLT3", "FCER1A")),
+  
+  data.table(celltype ="Platelets", markers =  c("PPBP", "PF4")),
+  data.table(celltype ="Proliferating", markers = c("TOP2A", "MKI67")),
+  data.table(celltype ="Neutrophils", markers =  c("CXCR2"))
+)
+
+
+p_1st_human_l1 = doMarkerDotPlot(seurat_human2, marker_groups_peter)
+p_1st_human_l2 = doMarkerDotPlot(seurat_human2, marker_groups_peter, grouping_factor = "predicted.celltype.l2_1st")
+
+p_1st_cyno_l1 = doMarkerDotPlot(seurat_cyno_ortho2, marker_groups_peter)
+p_1st_cyno_l2 = doMarkerDotPlot(seurat_cyno_ortho2, marker_groups_peter, grouping_factor = "predicted.celltype.l2_1st")
+
+
+```
+
+
+
+
+
+
+# models 
+
+```{r}
+available_data <- SeuratData::AvailableData()
+available_data[grep("Azimuth", available_data[, 3]), 1:3]
+```
+
+
+# AZIMUTH Human 
+
+```{r}
+
+# seurat_human = JoinLayers(seurat_human)
+seurat_human2 <- RunAzimuth(seurat_human2, reference = "pbmcref")
+
+anno_human2 = seurat_human2@meta.data %>% as.data.table(keep.rownames = T)
+anno_human2[ predicted.celltype.l2_1st != predicted.celltype.l2, .N, .(predicted.celltype.l2_1st, predicted.celltype.l2)][order(N, predicted.celltype.l2)] %>% data.frame()
+
+
+VlnPlot(seurat_human2, c( "predicted.celltype.l2.score_1st", "predicted.celltype.l2.score" ),group.by = "predicted.celltype.l2") # slieghtly better
+```
+
+# AZIMUTH cyno 
+
+```{r}
+seurat_cyno_ortho2 <- RunAzimuth(seurat_cyno_ortho2, reference = "pbmcref")
+
+anno_cyno_ortho2 = seurat_cyno_ortho2@meta.data %>% as.data.table(keep.rownames = T)
+anno_cyno_ortho2[ predicted.celltype.l2_1st != predicted.celltype.l2, .N, .(predicted.celltype.l2_1st, predicted.celltype.l2)][order(N, predicted.celltype.l2)] %>% data.frame()
+
+
+VlnPlot(seurat_cyno_ortho2, c( "predicted.celltype.l2.score_1st", "predicted.celltype.l2.score" ),group.by = "predicted.celltype.l2") # slieghtly better
+
+```
+
+```{r}
+
+plotSankey(anno_cyno_ortho2[ predicted.celltype.l2_1st != predicted.celltype.l2,.(predicted.celltype.l2_1st , predicted.celltype.l2)], spalte4color = "predicted.celltype.l2")
+ggplotSankey(input = anno_cyno_ortho2[ predicted.celltype.l2_1st != predicted.celltype.l2,.(predicted.celltype.l2 , predicted.celltype.l2_1st)], sort_by_frequency=T)
+
+
+```
+
+## rename
+```{r}
+# rename predicted.celltype.l2.score to _2nd
+to_rename2=grep("^predicted(?!.*1st$)", names(seurat_human2@meta.data), value = TRUE, perl = TRUE)
+to_rename2
+setnames(seurat_human2@meta.data, to_rename2, paste0(to_rename2, "_2nd"))
+
+to_rename2=grep("^predicted(?!.*1st$)", names(seurat_cyno_ortho2@meta.data), value = TRUE, perl = TRUE)
+to_rename2
+setnames(seurat_cyno_ortho2@meta.data, to_rename2, paste0(to_rename2, "_2nd"))
+
+anno_cyno_ortho2 = seurat_cyno_ortho2@meta.data  %>% data.table(keep.rownames = T)
+anno_human2 = seurat_human2@meta.data %>% data.table(keep.rownames = T)
+## -----------------------------------------------------------------------------------------------------------------
+
+plotSankey(anno_cyno_ortho2[ predicted.celltype.l2_1st != predicted.celltype.l2_2nd,.(predicted.celltype.l2_1st , predicted.celltype.l2_2nd)], spalte4color = "predicted.celltype.l2_2nd") 
+
+ggplotSankey(input = anno_cyno_ortho2[ predicted.celltype.l2_1st != predicted.celltype.l2_2nd,.(predicted.celltype.l2_1st , predicted.celltype.l2_2nd)], sort_by_frequency=T)  + ggtitle("Cyno, orthologues") +
+
+ggplotSankey(input = anno_human2[ predicted.celltype.l2_1st != predicted.celltype.l2_2nd,.(predicted.celltype.l2_1st , predicted.celltype.l2_2nd)], sort_by_frequency=T)  + ggtitle("Human")
+
+
+
+
+
+ggplotSankey(input = anno_cyno_ortho2[ ,.(predicted.celltype.l1_1st , predicted.celltype.l1_2nd)], sort_by_frequency=T) + ggtitle("Cyno, orthologues") + 
+  
+
+ggplotSankey(input = anno_human2[ ,.(predicted.celltype.l1_1st , predicted.celltype.l1_2nd)], sort_by_frequency=T) + ggtitle("Human")
+
+# compare predicted.celltype.l1_1st and predicted.celltype.l1_2nd as ggplot violine side - by -side
+# Assuming df is your data frame
+
+
+# Assuming dt is your data.table
+compareScores <- function(seurat_human2, celltypes2compare = c("predicted.celltype.l2_1st", "predicted.celltype.l2_2nd"), cellscores2compare = c("predicted.celltype.l2.score_1st", "predicted.celltype.l2.score_2nd")) {
+  dt <- as.data.table(seurat_human2@meta.data)
+  
+  # Melt the data.table to long format
+  dt_long <- melt(dt, id.vars = celltypes2compare, measure.vars = cellscores2compare,
+                  variable.name = "annoroundscore", value.name = "Score")
+  
+  dt_long2 = melt(dt_long, id.vars = c("Score", "annoroundscore"), variable.name = "annoround_celltype", value.name = "celltype")
+  
+  dt_long3 = dt_long2[(grepl("1st", annoround_celltype) & grepl("1st", annoroundscore)) | (grepl("2nd", annoround_celltype) & grepl("2nd", annoroundscore))]
+  dt_long3[,.N,.(annoround_celltype, annoroundscore)]
+  
+  
+  # Create the violin plot
+  ggplot(dt_long3, aes(x = celltype, y = Score, fill = annoround_celltype)) +
+    geom_violin(trim = T, scale = "width") +
+    theme_minimal() +
+    labs(
+      # title = "Comparison of predicted.celltype.l2.score_1st and predicted.celltype.l2.score_2nd",
+         x = "Cell Type",
+         y = "Score") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) 
+}
+
+
+p_scores_human = compareScores(seurat_human2, celltypes2compare = c("predicted.celltype.l1_1st", "predicted.celltype.l1_2nd"), cellscores2compare = c("predicted.celltype.l1.score_1st", "predicted.celltype.l1.score_2nd")) + compareScores(seurat_human2) + ggtitle("Human") + plot_layout(width = c(1,2)) & theme(legend.position = "top")
+p_scores_human
+
+
+p_scores_cyno_ortho  =
+compareScores(seurat_cyno_ortho2, celltypes2compare = c("predicted.celltype.l1_1st", "predicted.celltype.l1_2nd"), cellscores2compare = c("predicted.celltype.l1.score_1st", "predicted.celltype.l1.score_2nd"))+compareScores(seurat_cyno_ortho2) + ggtitle("Cyno ortho") + ggtitle("Cyno ortho")+ plot_layout(width = c(1,2)) & theme(legend.position = "top")
+
+p_scores_cyno_ortho
+```
+
+
+# combined anno
+```{r}
+ggplotSankey(rbind(anno_human2, anno_cyno_ortho2, fill = T)[,.(l2.2 = predicted.celltype.l2_2nd,l1.2=predicted.celltype.l1_2nd)]) + ggtitle("combined human & cynoortho")
+
+
+anno_human2[predicted.celltype.l2_2nd == "Platelet", .N, seurat_clusters]
+anno_human2[predicted.celltype.l2_2nd == "Platelet", .N, predicted.celltype.l1_2nd]
+
+anno_human2[, predicted.celltype.l1.5 := ifelse(predicted.celltype.l2_2nd == "Platelet",  "Platelet",
+                                                ifelse(predicted.celltype.l1_2nd == "NK" & predicted.celltype.l2_2nd == "NK Proliferating",  "NK Proliferating",
+                                                ifelse(predicted.celltype.l1_2nd == "CD4 T" & predicted.celltype.l2_2nd == "CD4 Proliferating",  "CD4 Proliferating",
+                                                       ifelse(predicted.celltype.l1_2nd == "CD8 T" & predicted.celltype.l2_2nd == "CD8 Proliferating",  "CD8 Proliferating",
+                                                              ifelse(predicted.celltype.l1_2nd == "Mono" & predicted.celltype.l2_2nd == "CD14 Mono",   "CD14 Mono",
+                                                                                                ifelse(predicted.celltype.l1_2nd == "Mono" & predicted.celltype.l2_2nd == "CD16 Mono", "CD16 Mono",                           ifelse(predicted.celltype.l1_2nd == "B" & predicted.celltype.l2_2nd == "Plasmablast",  "Plasmablast",                            ifelse(predicted.celltype.l1_2nd == "other T" & predicted.celltype.l2_2nd == "gdT",  "gdT",
+                                                                                                                                                                                                                                                                                                                                                                                           ifelse(predicted.celltype.l1_2nd == "other T" & predicted.celltype.l2_2nd == "MAIT",  "MAIT",ifelse(predicted.celltype.l1_2nd == "other T" & predicted.celltype.l2_2nd == "dnT",  "dnT",
+                                                       predicted.celltype.l1_2nd))))))))))]
+
+
+anno_cyno_ortho2[, predicted.celltype.l1.5 := ifelse(predicted.celltype.l2_2nd == "Platelet",  "Platelet",
+                                                     ifelse(predicted.celltype.l1_2nd == "NK" & predicted.celltype.l2_2nd == "NK Proliferating",  "NK Proliferating",
+                                                ifelse(predicted.celltype.l1_2nd == "CD4 T" & predicted.celltype.l2_2nd == "CD4 Proliferating",  "CD4 Proliferating",
+                                                       ifelse(predicted.celltype.l1_2nd == "CD8 T" & predicted.celltype.l2_2nd == "CD8 Proliferating",  "CD8 Proliferating",
+                                                              ifelse(predicted.celltype.l1_2nd == "Mono" & predicted.celltype.l2_2nd == "CD14 Mono",   "CD14 Mono",
+                                                                                                ifelse(predicted.celltype.l1_2nd == "Mono" & predicted.celltype.l2_2nd == "CD16 Mono", "CD16 Mono",                      ifelse(predicted.celltype.l1_2nd == "B" & predicted.celltype.l2_2nd == "Plasmablast",  "Plasmablast",                            ifelse(predicted.celltype.l1_2nd == "other T" & predicted.celltype.l2_2nd == "gdT",  "gdT",
+                                                                                                                                                                                                                                                                                                                                                                                           ifelse(predicted.celltype.l1_2nd == "other T" & predicted.celltype.l2_2nd == "MAIT",  "MAIT",ifelse(predicted.celltype.l1_2nd == "other T" & predicted.celltype.l2_2nd == "dnT",  "dnT",
+                                                       predicted.celltype.l1_2nd))))))))))]
+
+
+
+anno_cyno_ortho2[, predicted.celltype.l1.5score := ifelse(predicted.celltype.l1.5 == predicted.celltype.l1_2nd, predicted.celltype.l1.score_2nd, ifelse(predicted.celltype.l1.5 == predicted.celltype.l2_2nd, predicted.celltype.l2.score_2nd, NA))]
+
+anno_human2[, predicted.celltype.l1.5score := ifelse(predicted.celltype.l1.5 == predicted.celltype.l1_2nd, predicted.celltype.l1.score_2nd, ifelse(predicted.celltype.l1.5 == predicted.celltype.l2_2nd, predicted.celltype.l2.score_2nd, NA))]
+
+
+stopifnot(identical(colnames(seurat_human2), anno_human2$rn))
+seurat_human2$predicted.celltype.l1.5 = anno_human2$predicted.celltype.l1.5
+seurat_human2$predicted.celltype.l1.5score = anno_human2$predicted.celltype.l1.5score
+
+stopifnot(identical(colnames(seurat_cyno_ortho2), anno_cyno_ortho2$rn))
+seurat_cyno_ortho2$predicted.celltype.l1.5 = anno_cyno_ortho2$predicted.celltype.l1.5
+seurat_cyno_ortho2$predicted.celltype.l1.5score = anno_cyno_ortho2$predicted.celltype.l1.5score
+
+
+
+ggplotSankey(rbind(anno_human2, anno_cyno_ortho2, fill = T)[,.(
+
+  # l2.2 = predicted.celltype.l2_2nd,
+  l1_5.2 = predicted.celltype.l1.5, 
+  l1.2=predicted.celltype.l1_2nd)]) + ggtitle("combined human & cynoortho") +
+
+
+ggplotSankey(rbind(anno_human2, anno_cyno_ortho2, fill = T)[,.(
+
+  l2.2 = predicted.celltype.l2_2nd,
+  l1_5.2 = predicted.celltype.l1.5, 
+  l1.2=predicted.celltype.l1_2nd, 
+  species)]) + ggtitle("combined human & cynoortho")
+
+
+
+```
+
+
+### accuracy of combined score
+```{r}
+
+  dt <- rbind(anno_human2, anno_cyno_ortho2, fill = T)[,.(species, l2.1_5 = predicted.celltype.l1.5,l2.1_5score=predicted.celltype.l1.5score)] 
+dt
+  # # Melt the data.table to long format
+  # dt_long <- melt(dt, id.vars = celltypes2compare, measure.vars = cellscores2compare,
+  #                 variable.name = "annoroundscore", value.name = "Score")
+  # 
+  # dt_long2 = melt(dt_long, id.vars = c("Score", "annoroundscore"), variable.name = "annoround_celltype", value.name = "celltype")
+  # 
+  # dt_long3 = dt_long2[(grepl("1st", annoround_celltype) & grepl("1st", annoroundscore)) | (grepl("2nd", annoround_celltype) & grepl("2nd", annoroundscore))]
+  # dt_long3[,.N,.(annoround_celltype, annoroundscore)]
+  # 
+  # 
+  # Create the violin plot
+ p_cyno_humanscore= ggplot(dt, aes(x = l2.1_5, y = l2.1_5score, fill = species)) +
+    geom_violin(trim = T, scale = "width") +
+    theme_minimal() +
+    labs(
+      # title = "Comparison of predicted.celltype.l2.score_1st and predicted.celltype.l2.score_2nd",
+         x = "Cell Type",
+         y = "Score") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) 
+
+p_cyno_humanscore
+
+
+```
+
+
+# show markers per celltype
+```{r}
+p_marker_2nd_human_l1_5 = doMarkerDotPlot(seurat_human2, marker_groups_peter, grouping_factor = "predicted.celltype.l1.5") 
+
+p_marker_2nd_cyno_l1_5 = doMarkerDotPlot(seurat_cyno_ortho2, marker_groups_peter, grouping_factor = "predicted.celltype.l1.5")
+
+p_marker_2nd_human_l1_5+ p_marker_2nd_cyno_l1_5 & theme(legend.position = "top")
+```
+
+
+# save
+```{r}
+ fwrite(anno_human2, here("analysisR/results/s0135_cellano_human_azimuth_2nd.txt.gz"), sep = "\t")
+
+
+ fwrite(anno_cyno_ortho2, here("analysisR/results/s0135_cellano_cyno_azimuth_2nd.txt.gz"), sep = "\t")
+ 
+
+ saveRDS(seurat_human2, here("analysisR/results/s0135_seurat_human_azimuth_2nd.rds"))
+
+
+ saveRDS(seurat_cyno_ortho2, here("analysisR/results/s0135_seurat_cyno_ortho_azimuth_2nd.rds"))
+
+
+```
+
+
+# finalize
+```{r}
+finalizeSkript()
+```
