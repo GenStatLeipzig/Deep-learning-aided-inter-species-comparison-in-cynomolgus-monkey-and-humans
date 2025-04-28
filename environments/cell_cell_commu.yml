@@ -1,0 +1,39 @@
+# yaml to use for conda enviroment setup and installation for notebooks M26 and H26 cell-cell-communication analysis
+# author: kmlr81, Kristina Müller
+
+name: cell_cell_commu
+channels:
+  - conda-forge
+  - r
+  - bioconda
+dependencies:
+  - jupyterlab
+  - ipython
+  - cmake
+  - r-base
+  - r-xml
+  - bioconductor-limma
+  - bioconductor-complexheatmap
+  - r-reticulate
+  - r-ggplot2
+  - r-ragg
+  - r-stringi
+  - r-stringr
+  - r-tidyr
+  - r-purrr
+  - r-tibble
+  - r-nloptr
+  - pip
+  - pip:
+     - adjustText
+     - anndata
+     - numpy
+     - pandas
+     - matplotlib
+     - seaborn
+     - plotly
+     - scanpy
+     - liana
+     - decoupler
+     - anndata2ri
+     - rpy2
